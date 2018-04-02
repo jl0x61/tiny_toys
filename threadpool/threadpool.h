@@ -11,10 +11,14 @@ typedef struct task
 } thread_task;
 typedef struct 
 {
-  pthread_mutex_t queue_lock;
+  /* queue_lock ans queue_ready are used for 
+  thread-safelya accesing varibles about task queue*/
+  pthread_mutex_t queue_lock; 
   pthread_cond_t queue_ready;
   thread_task *queue_head;
+  /* created tids by main thread */
   pthread_t *tids;
+  /* 1 indicates user want to destroy the thread pool */
   int shutdown;
   int max_thread_num;
   int cur_queue_size;
@@ -25,6 +29,14 @@ int pool_add_task(thread_pool *pool, void *(*func)(void *), void *arg);
 int pool_destroy(thread_pool *pool);
 void *thread_main(void *arg);
 
+/******************************************************/
+/* Description: initialize a thread pool.
+/* Parameters: 
+/* pool is a thread pool to be initialized.
+/* max_thread_num is the number of threads in thread poo
+/* -l.
+/* Return Value: On success, 0 is returned. */
+/******************************************************/
 int pool_init(thread_pool *pool, int max_thread_num)
 {
     pthread_mutex_init(&(pool->queue_lock), NULL);
@@ -41,6 +53,11 @@ int pool_init(thread_pool *pool, int max_thread_num)
     return 0;
 }
 
+/******************************************************/
+/* Description: function executed by initialized thread.
+/* Parameters: 
+/* void_pool is a thread pool to be initialized. */
+/******************************************************/
 void *thread_main(void *void_pool)
 {
     thread_pool *pool = (thread_pool*)void_pool;
@@ -66,6 +83,14 @@ void *thread_main(void *void_pool)
      pthread_exit(NULL);
 }
 
+/******************************************************/
+/* Description: add a task into the task queue.
+/* Parameters: 
+/* pool is a thread pool to be initialized.
+/* function is the task to be process.
+/* arg is the arguments of function.
+/* Return Value: On success, 0 is returned.  */
+/******************************************************/
 int pool_add_task(thread_pool *pool, void *(*func)(void *), void *arg)
 {
     thread_task* task = (thread_task*)malloc(sizeof(thread_task));
@@ -88,6 +113,12 @@ int pool_add_task(thread_pool *pool, void *(*func)(void *), void *arg)
     return 0;
 }
 
+/******************************************************/
+/* Description: initialize a thread pool.
+/* Parameters: 
+/* pool is a thread pool to be initialized.
+/* Return Value: On success, 0 is returned. */
+/******************************************************/
 int pool_destroy(thread_pool *pool)
 {
     if(pool->shutdown) return -1;
