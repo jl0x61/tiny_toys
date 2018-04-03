@@ -60,6 +60,11 @@ void cat(int fd, const char *filename)
     fclose(resource);
 }
 
+/***************************************/
+/* Description: send the contents of 
+/* file specified with filename to fd
+/* by bytes flow.
+/***************************************/
 void cat_bytes(int fd, const char *filename)
 {
     FILE *resource = fopen(filename, "rb");
