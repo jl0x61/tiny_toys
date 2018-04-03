@@ -23,6 +23,10 @@ void err_quit(const char* str)
     exit(1);
 }
 
+/***************************************/
+/* Read and discard the header of HTTP
+/* packet.
+/***************************************/
 void discard_headers(int fd)
 {
     char buf[1024];
@@ -34,6 +38,10 @@ void discard_headers(int fd)
     }
 }
 
+/***************************************/
+/* Description: send the contents of 
+/* file specified with filename to fd
+/***************************************/
 void cat(int fd, const char *filename)
 {
     FILE *resource = fopen(filename, "r");
@@ -154,6 +162,13 @@ void *accept_request(void *arg)
     close(clifd);
     return NULL;
 }
+
+/***************************************/
+/* Description: read a line from socket.
+/* It is guaranteed the returned line 
+/* ended with '\n'.
+/* Return value: the length of theline.*/
+/***************************************/
 int get_line(int fd, char *buf, int size)
 {
     int i = 0;
