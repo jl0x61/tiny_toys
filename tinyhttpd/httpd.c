@@ -14,7 +14,12 @@
 #define LISTENQ 1024
 #define MAXEVENTS 4096
 #define SERV_STRING "Server: jlxhttpd\r\n"
+#define MAXFILETYPES 10
 char buf[1024], PATH[512];
+char file_types[MAXFILETYPES][2][64] = {
+    { "html", "text/html" },
+    { "jpg", "image/jpeg" }
+};
 thread_pool *pool = NULL;
 int get_line(int fd, char *buf, int size);
 void err_quit(const char* str)
@@ -53,6 +58,43 @@ void cat(int fd, const char *filename)
         fgets(buf, sizeof(buf), resource);
     }
     fclose(resource);
+}
+
+void cat_bytes(int fd, const char *filename)
+{
+    FILE *resource = fopen(filename, "rb");
+    char buf[1024];
+    size_t n;
+    n = fread(buf, 1, 1024, resource);
+    while(!feof(resource))
+    {
+        send(fd, buf, n, 0);
+        n = fread(buf, 1, 1024, resource);
+    }
+    fclose(resource);
+}
+
+const char* get_filetype(char *buf, const char *filename)
+{
+    int i = 0;
+    char tmp[64];
+    while(filename[i]!='\0'&&filename[i]!='.') ++i;
+    if(filename[i] == '\0') strcpy(buf, "text/html");
+    else 
+    {
+        int j = 0;
+        ++i;
+        while(filename[i]!='\0') 
+            tmp[j++]=filename[i++];
+        tmp[j]='\0';
+        for(i=0; i<MAXFILETYPES; ++i)
+            if(strcasecmp(tmp, file_types[i][0]) == 0)
+            {
+                strcpy(buf, file_types[i][1]);
+                break;
+            }
+    }
+    return buf;
 }
 
 void unimplemented(int fd)
@@ -95,17 +137,21 @@ void serve_file(int fd, const char *filename)
 {
     discard_headers(fd);
     char buf[1024];
+    char ft[64];
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, SERV_STRING);
     send(fd, buf, strlen(buf), 0);
-    sprintf(buf, "Content-Type: text/html\r\n");
+    sprintf(buf, "Content-Type: %s\r\n", get_filetype(ft, filename));
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "Connection: closed\r\n");
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "\r\n");
     send(fd, buf, strlen(buf), 0);
-    cat(fd, filename);
+    //cat(fd, filename);
+    if(strcmp(ft, "image/jpeg") == 0) 
+        cat_bytes(fd, filename);
+    else cat(fd, filename);
 }
 
 
