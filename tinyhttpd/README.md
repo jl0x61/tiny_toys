@@ -2,8 +2,6 @@
 a tiny http server for only GET request. \
 It was implemented by thread pool and epoll. 
 
-## detailed description
-
 
 ## usage
 use `gcc -o httpd httpd.c -lpthread` to compile. \
