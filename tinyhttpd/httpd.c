@@ -12,9 +12,16 @@
 #include <ctype.h>
 #include <fcntl.h>
 #define LISTENQ 1024
+#define MAX_SPECIFIC_DATA 12
+#define MAX_SPECIFIC_DATA_SIZE 4096
+#define TOTALBUFSIZE 4096
 #define MAXEVENTS 4096
 #define SERV_STRING "Server: jlxhttpd\r\n"
 #define MAXFILETYPES 10
+
+pthread_once_t buf_once = PTHREAD_ONCE_INIT;
+pthread_key_t buf_key[MAX_SPECIFIC_DATA];
+
 char buf[1024], PATH[512];
 char file_types[MAXFILETYPES][2][64] = {
     { "html", "text/html" },
@@ -22,6 +29,14 @@ char file_types[MAXFILETYPES][2][64] = {
 };
 thread_pool *pool = NULL;
 int get_line(int fd, char *buf, int size);
+
+
+void buf_init_once(void)
+{
+    for(int i=0; i<MAX_SPECIFIC_DATA; ++i)
+        pthread_key_create(&buf_key[i], free);
+}
+
 void err_quit(const char* str)
 {
     perror(str);
@@ -32,14 +47,13 @@ void err_quit(const char* str)
 /* Read and discard the header of HTTP
 /* packet.
 /***************************************/
-void discard_headers(int fd)
+void discard_headers(int fd, char* trash_can)
 {
-    char buf[1024];
-    buf[0]='A';buf[1]='\0';
+    trash_can[0]='A';trash_can[1]='\0';
     int numchars = 1;
-    while((numchars>0)&&strcmp("\n", buf))
+    while((numchars>0)&&strcmp("\n", trash_can))
     {
-        numchars = get_line(fd, buf, sizeof(buf));
+        numchars = get_line(fd, trash_can, sizeof(trash_can));
     }
 }
 
@@ -50,7 +64,7 @@ void discard_headers(int fd)
 void cat(int fd, const char *filename)
 {
     FILE *resource = fopen(filename, "r");
-    char buf[1024];
+    char *buf = pthread_getspecific(buf_key[0]);
     fgets(buf, sizeof(buf), resource);
     while(!feof(resource))
     {
@@ -68,7 +82,7 @@ void cat(int fd, const char *filename)
 void cat_bytes(int fd, const char *filename)
 {
     FILE *resource = fopen(filename, "rb");
-    char buf[1024];
+    char *buf = pthread_getspecific(buf_key[0]);
     size_t n;
     n = fread(buf, 1, 1024, resource);
     while(!feof(resource))
@@ -79,10 +93,9 @@ void cat_bytes(int fd, const char *filename)
     fclose(resource);
 }
 
-const char* get_filetype(char *buf, const char *filename)
+const char* get_filetype(char *tmp, char *buf, const char *filename)
 {
     int i = 0;
-    char tmp[64];
     while(filename[i]!='\0'&&filename[i]!='.') ++i;
     if(filename[i] == '\0') strcpy(buf, "text/html");
     else 
@@ -104,8 +117,8 @@ const char* get_filetype(char *buf, const char *filename)
 
 void unimplemented(int fd)
 {
-    discard_headers(fd);
-    char buf[1024];
+    char *buf = pthread_getspecific(buf_key[0]);
+    discard_headers(fd, buf);
     sprintf(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, SERV_STRING);
@@ -116,14 +129,15 @@ void unimplemented(int fd)
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "\r\n");
     send(fd, buf, strlen(buf), 0);
-    sprintf(buf, "%s/501.html",PATH);
-    cat(fd, buf);
+    char *filename = pthread_getspecific(buf_key[4]);
+    sprintf(filename, "%s/501.html",PATH);
+    cat(fd, filename);
 }
 
 void not_found(int fd)
 {
-    discard_headers(fd);
-    char buf[1024];
+    char *buf = pthread_getspecific(buf_key[0]);
+    discard_headers(fd, buf);
     sprintf(buf, "HTTP/1.0 404 NOTFOUND\r\n");
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, SERV_STRING);
@@ -134,20 +148,22 @@ void not_found(int fd)
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "\r\n");
     send(fd, buf, strlen(buf), 0);
-    sprintf(buf, "%s/404.html",PATH);
-    cat(fd, buf);
+    char *filename = pthread_getspecific(buf_key[4]);
+    sprintf(filename, "%s/404.html",PATH);
+    cat(fd, filename);
 }
 
-void serve_file(int fd, const char *filename)
+void respond_ok(int fd, const char *filename)
 {
-    discard_headers(fd);
-    char buf[1024];
-    char ft[64];
+    char *buf = pthread_getspecific(buf_key[0]);
+    discard_headers(fd, buf);
+    char *ft = pthread_getspecific(buf_key[4]);
+    char *tmp = pthread_getspecific(buf_key[5]);
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, SERV_STRING);
     send(fd, buf, strlen(buf), 0);
-    sprintf(buf, "Content-Type: %s\r\n", get_filetype(ft, filename));
+    sprintf(buf, "Content-Type: %s\r\n", get_filetype(tmp, ft, filename));
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "Connection: closed\r\n");
     send(fd, buf, strlen(buf), 0);
@@ -162,13 +178,26 @@ void serve_file(int fd, const char *filename)
 
 void *accept_request(void *arg)
 {
+    pthread_once(&buf_once, buf_init_once);
+    /* init thread-specific data  */
+    for(int i=0; i<MAX_SPECIFIC_DATA_SIZE; ++i)
+    {
+        char *tbuf;
+        if((tbuf = pthread_getspecific(buf_key[i])) == NULL)
+        {
+            tbuf = malloc(sizeof(MAX_SPECIFIC_DATA_SIZE));
+            pthread_setspecific(buf_key[i], tbuf);
+        }
+    }
     int clifd = *(int*)arg;
     printf("start to process request on socket %d\n", clifd);
-    char buf[1024], url[255], method[255], path[255]; // xingneng
-    int numchars;
+    char *buf = pthread_getspecific(buf_key[0]);
+    char *url = pthread_getspecific(buf_key[1]);
+    char *method = pthread_getspecific(buf_key[2]);
+    char *path = pthread_getspecific(buf_key[3]);
     int i,j;
     struct stat st;
-    numchars = get_line(clifd, buf, sizeof(buf));
+    int numchars = get_line(clifd, buf, sizeof(buf));
     i=0;j=0;
     while(!isspace(buf[i]) && (i<sizeof(method)-1))
     {
@@ -207,7 +236,7 @@ void *accept_request(void *arg)
         if(stat(path, &st) == -1){
             not_found(clifd);
         }
-        serve_file(clifd, path);
+        respond_ok(clifd, path);
     }
     printf("connection terminated\n");
     close(clifd);

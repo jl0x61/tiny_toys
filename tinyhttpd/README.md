@@ -13,6 +13,6 @@ use `./httpd <path> <port> &` to run. \
 httpd occupy nearly 100% CPU.
 
 ## TODO list:
-1. Make every thread in thread pool have a buffer. Because buffer was initialized at the beginning of many function. That will degrade perfermance largely. 
+1. Make every thread in thread pool have a buffer. Because buffer was initialized at the beginning of many function. That will degrade perfermance largely. (DONE, use thread-specific data to solve it, every buffer will be initialized only once)
 2. Implement http download.
 3. Add a test program to test the perfermance.
