@@ -12,8 +12,8 @@
 #include <ctype.h>
 #include <fcntl.h>
 #define LISTENQ 1024
-#define MAX_SPECIFIC_DATA 12
-#define MAX_SPECIFIC_DATA_SIZE 4096
+#define MAX_SPECIFIC_DATA 20
+#define MAX_SPECIFIC_DATA_SIZE 1024
 #define TOTALBUFSIZE 4096
 #define MAXEVENTS 4096
 #define SERV_STRING "Server: jlxhttpd\r\n"
@@ -21,7 +21,7 @@
 
 pthread_once_t buf_once = PTHREAD_ONCE_INIT;
 pthread_key_t buf_key[MAX_SPECIFIC_DATA];
-
+pthread_key_t buf_id;
 char buf[1024], PATH[512];
 char file_types[MAXFILETYPES][2][64] = {
     { "html", "text/html" },
@@ -30,11 +30,18 @@ char file_types[MAXFILETYPES][2][64] = {
 thread_pool *pool = NULL;
 int get_line(int fd, char *buf, int size);
 
+void *malloc_specific_data()
+{
+    int *id = (int*)pthread_getspecific(buf_id);
+    ++(*id);
+    return pthread_getspecific(buf_key[(*id)-1]);
+}
 
 void buf_init_once(void)
 {
     for(int i=0; i<MAX_SPECIFIC_DATA; ++i)
         pthread_key_create(&buf_key[i], free);
+    pthread_key_create(&buf_id, free);
 }
 
 void err_quit(const char* str)
@@ -53,7 +60,7 @@ void discard_headers(int fd, char* trash_can)
     int numchars = 1;
     while((numchars>0)&&strcmp("\n", trash_can))
     {
-        numchars = get_line(fd, trash_can, sizeof(trash_can));
+        numchars = get_line(fd, trash_can, MAX_SPECIFIC_DATA_SIZE);
     }
 }
 
@@ -64,12 +71,12 @@ void discard_headers(int fd, char* trash_can)
 void cat(int fd, const char *filename)
 {
     FILE *resource = fopen(filename, "r");
-    char *buf = pthread_getspecific(buf_key[0]);
-    fgets(buf, sizeof(buf), resource);
+    char *buf = malloc_specific_data();
+    fgets(buf, MAX_SPECIFIC_DATA_SIZE, resource);
     while(!feof(resource))
     {
         send(fd, buf, strlen(buf), 0);
-        fgets(buf, sizeof(buf), resource);
+        fgets(buf, MAX_SPECIFIC_DATA_SIZE, resource);
     }
     fclose(resource);
 }
@@ -82,7 +89,7 @@ void cat(int fd, const char *filename)
 void cat_bytes(int fd, const char *filename)
 {
     FILE *resource = fopen(filename, "rb");
-    char *buf = pthread_getspecific(buf_key[0]);
+    char *buf = malloc_specific_data();
     size_t n;
     n = fread(buf, 1, 1024, resource);
     while(!feof(resource))
@@ -93,8 +100,9 @@ void cat_bytes(int fd, const char *filename)
     fclose(resource);
 }
 
-const char* get_filetype(char *tmp, char *buf, const char *filename)
+const char* get_filetype(char *buf, const char *filename)
 {
+    char *tmp = malloc_specific_data();
     int i = 0;
     while(filename[i]!='\0'&&filename[i]!='.') ++i;
     if(filename[i] == '\0') strcpy(buf, "text/html");
@@ -117,7 +125,7 @@ const char* get_filetype(char *tmp, char *buf, const char *filename)
 
 void unimplemented(int fd)
 {
-    char *buf = pthread_getspecific(buf_key[0]);
+    char *buf = malloc_specific_data();
     discard_headers(fd, buf);
     sprintf(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
     send(fd, buf, strlen(buf), 0);
@@ -129,14 +137,14 @@ void unimplemented(int fd)
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "\r\n");
     send(fd, buf, strlen(buf), 0);
-    char *filename = pthread_getspecific(buf_key[4]);
+    char *filename = malloc_specific_data();
     sprintf(filename, "%s/501.html",PATH);
     cat(fd, filename);
 }
 
 void not_found(int fd)
 {
-    char *buf = pthread_getspecific(buf_key[0]);
+    char *buf = malloc_specific_data();
     discard_headers(fd, buf);
     sprintf(buf, "HTTP/1.0 404 NOTFOUND\r\n");
     send(fd, buf, strlen(buf), 0);
@@ -148,22 +156,21 @@ void not_found(int fd)
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "\r\n");
     send(fd, buf, strlen(buf), 0);
-    char *filename = pthread_getspecific(buf_key[4]);
+    char *filename = malloc_specific_data();
     sprintf(filename, "%s/404.html",PATH);
     cat(fd, filename);
 }
 
 void respond_ok(int fd, const char *filename)
 {
-    char *buf = pthread_getspecific(buf_key[0]);
+    char *buf = malloc_specific_data();
     discard_headers(fd, buf);
-    char *ft = pthread_getspecific(buf_key[4]);
-    char *tmp = pthread_getspecific(buf_key[5]);
+    char *ft = malloc_specific_data();
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, SERV_STRING);
     send(fd, buf, strlen(buf), 0);
-    sprintf(buf, "Content-Type: %s\r\n", get_filetype(tmp, ft, filename));
+    sprintf(buf, "Content-Type: %s\r\n", get_filetype(ft, filename));
     send(fd, buf, strlen(buf), 0);
     sprintf(buf, "Connection: closed\r\n");
     send(fd, buf, strlen(buf), 0);
@@ -178,28 +185,38 @@ void respond_ok(int fd, const char *filename)
 
 void *accept_request(void *arg)
 {
+    printf("start accept request\n");
     pthread_once(&buf_once, buf_init_once);
     /* init thread-specific data  */
-    for(int i=0; i<MAX_SPECIFIC_DATA_SIZE; ++i)
+    for(int i=0; i<MAX_SPECIFIC_DATA; ++i)
     {
         char *tbuf;
         if((tbuf = pthread_getspecific(buf_key[i])) == NULL)
         {
-            tbuf = malloc(sizeof(MAX_SPECIFIC_DATA_SIZE));
+            tbuf = (char*)malloc(MAX_SPECIFIC_DATA_SIZE);
             pthread_setspecific(buf_key[i], tbuf);
         }
     }
+    {
+        int *id = NULL;
+        if((id = pthread_getspecific(buf_id)) == NULL)
+        {
+            id = (int*)malloc(sizeof(int));
+            pthread_setspecific(buf_id, id);
+        }
+
+    }
     int clifd = *(int*)arg;
     printf("start to process request on socket %d\n", clifd);
-    char *buf = pthread_getspecific(buf_key[0]);
-    char *url = pthread_getspecific(buf_key[1]);
-    char *method = pthread_getspecific(buf_key[2]);
-    char *path = pthread_getspecific(buf_key[3]);
+    char *buf = malloc_specific_data();
+    char *url = malloc_specific_data();
+    char *method = malloc_specific_data();
+    char *path = malloc_specific_data();
     int i,j;
     struct stat st;
-    int numchars = get_line(clifd, buf, sizeof(buf));
+    int numchars = get_line(clifd, buf, MAX_SPECIFIC_DATA_SIZE);
     i=0;j=0;
-    while(!isspace(buf[i]) && (i<sizeof(method)-1))
+    while(!isspace(buf[i]) && (i<MAX_SPECIFIC_DATA_SIZE-1))
     {
         method[i] = buf[i];
         ++i;
@@ -216,7 +233,7 @@ void *accept_request(void *arg)
     /* ignoring spaces */
     while(isspace(buf[j]) && j<numchars) 
         ++j;
-    while(!isspace(buf[j])&&i<sizeof(url)-1&&j<numchars)
+    while(!isspace(buf[j])&&i<MAX_SPECIFIC_DATA_SIZE-1&&j<numchars)
     {
         url[i++]=buf[j++];
     }
@@ -346,8 +363,11 @@ int main(int argc, char **argv)
                 }
                 else if(events[i].events & EPOLLIN)
                 {
+                    printf("EPOLLIN accepted\n");
                     int clifd = events[i].data.fd;
+                    printf("before add task\n");
                     pool_add_task(pool, accept_request, (void*)&clifd);
+                    printf("after add task");
                     epoll_ctl(epfd, EPOLL_CTL_DEL, clifd, NULL);
                 }
             }
