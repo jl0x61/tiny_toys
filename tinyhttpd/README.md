@@ -10,7 +10,8 @@ use `./httpd <path> <port> &` to run. \
 `<port>` is the port number to provide http service. `<port>` is usually 80. 
 
 ## known issues
-httpd occupy nearly 100% CPU.
+1. httpd occupy nearly 100% CPU.
+2. httpd will exit when more than about 10 connection in a short time.
 
 ## TODO list:
 1. Make every thread in thread pool have a buffer. Because buffer was initialized at the beginning of many function. That will degrade perfermance largely. (DONE, use thread-specific data to solve it, every buffer will be initialized only once)
