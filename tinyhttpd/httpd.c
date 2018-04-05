@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -30,9 +31,16 @@ char file_types[MAXFILETYPES][2][64] = {
 thread_pool *pool = NULL;
 int get_line(int fd, char *buf, int size);
 
+void send_nosignal(int fd, char*buf, size_t size)
+{
+    if(send(fd, buf, size, MSG_NOSIGNAL) < 0)
+        perror("send");
+}
+
 void *malloc_specific_data()
 {
     int *id = (int*)pthread_getspecific(buf_id);
+    if((*id) == MAX_SPECIFIC_DATA) return NULL;
     ++(*id);
     return pthread_getspecific(buf_key[(*id)-1]);
 }
@@ -75,7 +83,7 @@ void cat(int fd, const char *filename)
     fgets(buf, MAX_SPECIFIC_DATA_SIZE, resource);
     while(!feof(resource))
     {
-        send(fd, buf, strlen(buf), 0);
+        send_nosignal(fd, buf, strlen(buf));
         fgets(buf, MAX_SPECIFIC_DATA_SIZE, resource);
     }
     fclose(resource);
@@ -91,11 +99,11 @@ void cat_bytes(int fd, const char *filename)
     FILE *resource = fopen(filename, "rb");
     char *buf = malloc_specific_data();
     size_t n;
-    n = fread(buf, 1, 1024, resource);
+    n = fread(buf, 1, MAX_SPECIFIC_DATA_SIZE, resource);
     while(!feof(resource))
     {
-        send(fd, buf, n, 0);
-        n = fread(buf, 1, 1024, resource);
+        send_nosignal(fd, buf, n);
+        n = fread(buf, 1, MAX_SPECIFIC_DATA_SIZE, resource);
     }
     fclose(resource);
 }
@@ -104,13 +112,13 @@ const char* get_filetype(char *buf, const char *filename)
 {
     char *tmp = malloc_specific_data();
     int i = 0;
-    while(filename[i]!='\0'&&filename[i]!='.') ++i;
+    while(filename[i]!='\0'&&filename[i]!='.'&&i<MAX_SPECIFIC_DATA_SIZE-2) ++i;
     if(filename[i] == '\0') strcpy(buf, "text/html");
     else 
     {
         int j = 0;
         ++i;
-        while(filename[i]!='\0') 
+        while(filename[i]!='\0'&&i<MAX_SPECIFIC_DATA_SIZE-1) 
             tmp[j++]=filename[i++];
         tmp[j]='\0';
         for(i=0; i<MAXFILETYPES; ++i)
@@ -128,15 +136,15 @@ void unimplemented(int fd)
     char *buf = malloc_specific_data();
     discard_headers(fd, buf);
     sprintf(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, SERV_STRING);
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "Content-Type: text/html\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "Connection: closed\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     char *filename = malloc_specific_data();
     sprintf(filename, "%s/501.html",PATH);
     cat(fd, filename);
@@ -147,15 +155,15 @@ void not_found(int fd)
     char *buf = malloc_specific_data();
     discard_headers(fd, buf);
     sprintf(buf, "HTTP/1.0 404 NOTFOUND\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, SERV_STRING);
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "Content-Type: text/html\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "Connection: closed\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     char *filename = malloc_specific_data();
     sprintf(filename, "%s/404.html",PATH);
     cat(fd, filename);
@@ -167,15 +175,15 @@ void respond_ok(int fd, const char *filename)
     discard_headers(fd, buf);
     char *ft = malloc_specific_data();
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, SERV_STRING);
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "Content-Type: %s\r\n", get_filetype(ft, filename));
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "Connection: closed\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     sprintf(buf, "\r\n");
-    send(fd, buf, strlen(buf), 0);
+    send_nosignal(fd, buf, strlen(buf));
     //cat(fd, filename);
     if(strcmp(ft, "image/jpeg") == 0) 
         cat_bytes(fd, filename);
@@ -185,7 +193,6 @@ void respond_ok(int fd, const char *filename)
 
 void *accept_request(void *arg)
 {
-    printf("start accept request\n");
     pthread_once(&buf_once, buf_init_once);
     /* init thread-specific data  */
     for(int i=0; i<MAX_SPECIFIC_DATA; ++i)
@@ -256,6 +263,10 @@ void *accept_request(void *arg)
         respond_ok(clifd, path);
     }
     printf("connection terminated\n");
+    {
+        int *k = pthread_getspecific(buf_id);
+        *k=0;
+    }
     close(clifd);
     return NULL;
 }
@@ -289,6 +300,7 @@ int get_line(int fd, char *buf, int size)
     buf[i] = '\0';
     return i;
 }
+
 int main(int argc, char **argv)
 {
     if(argc != 3)
@@ -296,6 +308,12 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s <directory> <port>", argv[0]);
         exit(0);
     }
+    sigset_t signal_mask; 
+    sigemptyset(&signal_mask); 
+    sigaddset(&signal_mask, SIGPIPE); 
+    if(pthread_sigmask(SIG_BLOCK, &signal_mask, NULL) == -1) 
+        perror("SIGPIPE"); 
+
     strcpy(PATH, argv[1]);
     int pathlen = strlen(PATH);
     if(PATH[pathlen-1] == '/')
@@ -363,11 +381,8 @@ int main(int argc, char **argv)
                 }
                 else if(events[i].events & EPOLLIN)
                 {
-                    printf("EPOLLIN accepted\n");
                     int clifd = events[i].data.fd;
-                    printf("before add task\n");
                     pool_add_task(pool, accept_request, (void*)&clifd);
-                    printf("after add task");
                     epoll_ctl(epfd, EPOLL_CTL_DEL, clifd, NULL);
                 }
             }
